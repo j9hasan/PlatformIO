@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include "lvgl.h"
+#include "demos/lv_demos.h"
 
 /*
  * ESP WiFi Analyzer
@@ -21,9 +23,14 @@
 
 #define GFX_BL DF_GFX_BL
 
-// Arduino_DataBus *bus = create_default_Arduino_DataBus();
+#if defined(ESP32) && (CONFIG_IDF_TARGET_ESP32)
 
-// Arduino_GFX *gfx = new Arduino_ILI9341(bus, DF_GFX_RST, 3 /* rotation */, false /* IPS */);
+Arduino_DataBus *bus = create_default_Arduino_DataBus();
+Arduino_GFX *gfx = new Arduino_ILI9341(bus, DF_GFX_RST, 3 /* rotation */, false /* IPS */);
+
+#endif
+
+#if defined(ESP32) && (CONFIG_IDF_TARGET_ESP32S3)
 
 Arduino_ESP32RGBPanel *bus = new Arduino_ESP32RGBPanel(
     // GFX_NOT_DEFINED /* CS */, GFX_NOT_DEFINED /* SCK */, GFX_NOT_DEFINED /* SDA */,
@@ -31,57 +38,76 @@ Arduino_ESP32RGBPanel *bus = new Arduino_ESP32RGBPanel(
     14 /* R0 */, 21 /* R1 */, 47 /* R2 */, 48 /* R3 */, 45 /* R4 */,
     9 /* G0 */, 46 /* G1 */, 3 /* G2 */, 8 /* G3 */, 16 /* G4 */, 1 /* G5 */,
     15 /* B0 */, 7 /* B1 */, 6 /* B2 */, 5 /* B3 */, 4 /* B4 */,
-    0 /* hsync_polarity */, 210 /* hsync_front_porch */, 30 /* hsync_pulse_width */, 16 /* hsync_back_porch */,
-    0 /* vsync_polarity */, 22 /* vsync_front_porch */, 13 /* vsync_pulse_width */, 10 /* vsync_back_porch */,
-    1 /* pclk_active_neg */, 8000000 /* prefer_speed */, GFX_NOT_DEFINED /* auto_flush */
+    0 /* hsync_polarity */, 180 /* hsync_front_porch */, 30 /* hsync_pulse_width */, 16 /* hsync_back_porch */,
+    0 /* vsync_polarity */, 12 /* vsync_front_porch */, 13 /* vsync_pulse_width */, 10 /* vsync_back_porch */ // ,1 /* pclk_active_neg */, 8000000 /* prefer_speed */, GFX_NOT_DEFINED /* auto_flush */
 
 );
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
-    800, 480, bus,
-    // bus,
-    // 800 /* width */, 0 /* hsync_polarity */, 210 /* hsync_front_porch */, 30 /* hsync_pulse_width */, 16 /* hsync_back_porch */,
-    // 480 /* height */, 0 /* vsync_polarity */, 22 /* vsync_front_porch */, 13 /* vsync_pulse_width */, 10 /* vsync_back_porch */,
-    // 1 /* pclk_active_neg */, 8000000 /* prefer_speed */, true /* auto_flush */
-);
+    800, 480, bus, 0, true, NULL);
 
-#include "WiFi.h"
+#endif
 
-int16_t w, h, text_size, banner_height, graph_baseline, graph_height, channel_width, signal_width;
+#include "touch.h"
 
-// RSSI RANGE
-#define RSSI_CEILING -40
-#define RSSI_FLOOR -100
+// static protootypes
+void printMemoryInfo();
+/* Change to your screen resolution */
+static uint32_t screenWidth;
+static uint32_t screenHeight;
+static uint32_t bufSize;
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t *disp_draw_buf;
+static lv_disp_drv_t disp_drv;
 
-// Channel color mapping from channel 1 to 14
-uint16_t channel_color[] = {
-    RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, MAGENTA,
-    RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, MAGENTA};
+/* Display flushing */
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
+{
+#ifndef DIRECT_MODE
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
 
-uint8_t scan_count = 0;
+#if (LV_COLOR_16_SWAP != 0)
+  gfx->draw16bitBeRGBBitmap(area->x1, area->y1, (uint16_t *)&color_p->full, w, h);
+#else
+  gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)&color_p->full, w, h);
+#endif
+#endif // #ifndef DIRECT_MODE
+
+  lv_disp_flush_ready(disp);
+}
+
+void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
+{
+  if (touch_has_signal())
+  {
+    if (touch_touched())
+    {
+      data->state = LV_INDEV_STATE_PR;
+
+      /*Set the coordinates*/
+      data->point.x = touch_last_x;
+      data->point.y = touch_last_y;
+    }
+    else if (touch_released())
+    {
+      data->state = LV_INDEV_STATE_REL;
+    }
+  }
+  else
+  {
+    data->state = LV_INDEV_STATE_REL;
+  }
+}
 
 void setup()
 {
   Serial.begin(115200);
-
-  Serial.println("Arduino_GFX ESP WiFi Analyzer");
-
-  // Set WiFi to station mode and disconnect from an AP if it was previously connected
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
+  // Serial.setDebugOutput(true);
+  // while(!Serial);
+  Serial.println("Arduino_GFX LVGL Widgets example");
 
 #ifdef GFX_EXTRA_PRE_INIT
   GFX_EXTRA_PRE_INIT();
-#endif
-
-#if defined(LCD_PWR_PIN)
-  pinMode(LCD_PWR_PIN, OUTPUT);    // sets the pin as output
-  digitalWrite(LCD_PWR_PIN, HIGH); // power on
-#endif
-
-#ifdef GFX_BL
-  pinMode(GFX_BL, OUTPUT);
-  digitalWrite(GFX_BL, HIGH);
 #endif
 
   // Init Display
@@ -89,266 +115,97 @@ void setup()
   {
     Serial.println("gfx->begin() failed!");
   }
-  w = gfx->width();
-  h = gfx->height();
-  text_size = (h < 200) ? 1 : 2;
-  banner_height = text_size * 3 * 4;
-  graph_baseline = h - 20;                            // minus 2 text lines
-  graph_height = graph_baseline - banner_height - 30; // minus 3 text lines
-  channel_width = w / 17;
-  signal_width = channel_width * 2;
-
-  // init banner
-  gfx->setTextSize(text_size);
   gfx->fillScreen(BLACK);
-  gfx->setTextColor(RED);
-  gfx->setCursor(0, 0);
-  gfx->print("ESP");
-  gfx->setTextColor(WHITE);
-  gfx->print(" WiFi Analyzer");
-}
 
-bool matchBssidPrefix(uint8_t *a, uint8_t *b)
-{
-  for (uint8_t i = 0; i < 5; i++)
-  { // only compare first 5 bytes
-    if (a[i] != b[i])
-    {
-      return false;
-    }
+#ifdef GFX_BL
+  pinMode(GFX_BL, OUTPUT);
+  digitalWrite(GFX_BL, HIGH);
+#endif
+
+  // Init touch device
+  // touch_init();
+
+  lv_init();
+
+  screenWidth = gfx->width();
+  screenHeight = gfx->height();
+
+#ifdef DIRECT_MODE
+  bufSize = screenWidth * screenHeight;
+#else
+  bufSize = screenWidth * 40;
+#endif
+
+#ifdef ESP32
+  disp_draw_buf = (lv_color_t *)heap_caps_malloc(sizeof(lv_color_t) * bufSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!disp_draw_buf)
+  {
+    // remove MALLOC_CAP_INTERNAL flag try again
+    disp_draw_buf = (lv_color_t *)heap_caps_malloc(sizeof(lv_color_t) * bufSize, MALLOC_CAP_8BIT);
   }
-  return true;
+#else
+  disp_draw_buf = (lv_color_t *)malloc(sizeof(lv_color_t) * bufSize);
+#endif
+  if (!disp_draw_buf)
+  {
+    Serial.println("LVGL disp_draw_buf allocate failed!");
+  }
+  else
+  {
+    lv_disp_draw_buf_init(&draw_buf, disp_draw_buf, NULL, bufSize);
+
+    /* Initialize the display */
+    lv_disp_drv_init(&disp_drv);
+    /* Change the following line to your display resolution */
+    disp_drv.hor_res = screenWidth;
+    disp_drv.ver_res = screenHeight;
+    disp_drv.flush_cb = my_disp_flush;
+    disp_drv.draw_buf = &draw_buf;
+#ifdef DIRECT_MODE
+    disp_drv.direct_mode = true;
+#endif
+    lv_disp_drv_register(&disp_drv);
+
+    /* Initialize the (dummy) input device driver */
+    static lv_indev_drv_t indev_drv;
+    lv_indev_drv_init(&indev_drv);
+    indev_drv.type = LV_INDEV_TYPE_POINTER;
+    indev_drv.read_cb = my_touchpad_read;
+    lv_indev_drv_register(&indev_drv);
+
+    lv_demo_widgets();
+
+    Serial.println("Setup done");
+  }
+  printMemoryInfo();
 }
 
 void loop()
 {
-  uint8_t ap_count_list[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  int32_t noise_list[] = {RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR};
-  int32_t peak_list[] = {RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR, RSSI_FLOOR};
-  int16_t peak_id_list[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
-  int32_t channel;
-  int16_t idx;
-  int32_t rssi;
-  uint8_t *bssid;
-  String ssid;
-  uint16_t color;
-  int16_t height, offset, text_width;
+  lv_timer_handler(); /* let the GUI do its work */
 
-  // WiFi.scanNetworks will return the number of networks found
-  int n = WiFi.scanNetworks(false /* async */, true /* show_hidden */, true /* passive */, 500 /* max_ms_per_chan */);
-
-  // clear old graph
-  gfx->fillRect(0, banner_height, w, h - banner_height, BLACK);
-  gfx->setTextSize(1);
-
-  if (n == 0)
-  {
-    gfx->setTextColor(WHITE);
-    gfx->setCursor(0, banner_height);
-    gfx->println("no networks found");
-  }
-  else
-  {
-    for (int i = 0; i < n; i++)
-    {
-      channel = WiFi.channel(i);
-      idx = channel - 1;
-      rssi = WiFi.RSSI(i);
-      bssid = WiFi.BSSID(i);
-
-      // channel peak stat
-      if (peak_list[idx] < rssi)
-      {
-        peak_list[idx] = rssi;
-        peak_id_list[idx] = i;
-      }
-
-      // check signal come from same AP
-      bool duplicate_SSID = false;
-      for (int j = 0; j < i; j++)
-      {
-        if ((WiFi.channel(j) == channel) && matchBssidPrefix(WiFi.BSSID(j), bssid))
-        {
-          duplicate_SSID = true;
-          break;
-        }
-      }
-
-      if (!duplicate_SSID)
-      {
-        ap_count_list[idx]++;
-
-        // noise stat
-        int32_t noise = rssi - RSSI_FLOOR;
-        noise *= noise;
-        if (channel > 4)
-        {
-          noise_list[idx - 4] += noise;
-        }
-        if (channel > 3)
-        {
-          noise_list[idx - 3] += noise;
-        }
-        if (channel > 2)
-        {
-          noise_list[idx - 2] += noise;
-        }
-        if (channel > 1)
-        {
-          noise_list[idx - 1] += noise;
-        }
-        noise_list[idx] += noise;
-        if (channel < 14)
-        {
-          noise_list[idx + 1] += noise;
-        }
-        if (channel < 13)
-        {
-          noise_list[idx + 2] += noise;
-        }
-        if (channel < 12)
-        {
-          noise_list[idx + 3] += noise;
-        }
-        if (channel < 11)
-        {
-          noise_list[idx + 4] += noise;
-        }
-      }
-    }
-
-    // plot found WiFi info
-    for (int i = 0; i < n; i++)
-    {
-      channel = WiFi.channel(i);
-      idx = channel - 1;
-      rssi = WiFi.RSSI(i);
-      color = channel_color[idx];
-      height = constrain(map(rssi, RSSI_FLOOR, RSSI_CEILING, 1, graph_height), 1, graph_height);
-      offset = (channel + 1) * channel_width;
-
-      // trim rssi with RSSI_FLOOR
-      if (rssi < RSSI_FLOOR)
-      {
-        rssi = RSSI_FLOOR;
-      }
-
-      // plot chart
-      // gfx->drawLine(offset, graph_baseline - height, offset - signal_width, graph_baseline + 1, color);
-      // gfx->drawLine(offset, graph_baseline - height, offset + signal_width, graph_baseline + 1, color);
-      gfx->startWrite();
-      gfx->writeEllipseHelper(offset, graph_baseline + 1, signal_width, height, 0b0011, color);
-      gfx->endWrite();
-
-      if (i == peak_id_list[idx])
-      {
-        // Print SSID, signal strengh and if not encrypted
-        String ssid = WiFi.SSID(i);
-        if (ssid.length() == 0)
-        {
-          ssid = WiFi.BSSIDstr(i);
-        }
-        text_width = (ssid.length() + 6) * 6;
-        if (text_width > w)
-        {
-          offset = 0;
-        }
-        else
-        {
-          offset -= signal_width;
-          if ((offset + text_width) > w)
-          {
-            offset = w - text_width;
-          }
-        }
-        gfx->setTextColor(color);
-        gfx->setCursor(offset, graph_baseline - 10 - height);
-        gfx->print(ssid);
-        gfx->print('(');
-        gfx->print(rssi);
-        gfx->print(')');
-        if (WiFi.encryptionType(i) == WIFI_AUTH_OPEN)
-        {
-          gfx->print('*');
-        }
-      }
-    }
-  }
-
-  // print WiFi stat
-  gfx->setTextColor(WHITE);
-  gfx->setCursor(0, banner_height);
-  gfx->print(n);
-  gfx->print(" networks found, lesser noise channels: ");
-  bool listed_first_channel = false;
-  int32_t min_noise = noise_list[0];          // init with channel 1 value
-  for (channel = 2; channel <= 11; channel++) // channels 12-14 may not available
-  {
-    idx = channel - 1;
-    log_i("min_noise: %d, noise_list[%d]: %d", min_noise, idx, noise_list[idx]);
-    if (noise_list[idx] < min_noise)
-    {
-      min_noise = noise_list[idx];
-    }
-  }
-
-  for (channel = 1; channel <= 11; channel++) // channels 12-14 may not available
-  {
-    idx = channel - 1;
-    // check channel with min noise
-    if (noise_list[idx] == min_noise)
-    {
-      if (!listed_first_channel)
-      {
-        listed_first_channel = true;
-      }
-      else
-      {
-        gfx->print(", ");
-      }
-      gfx->print(channel);
-    }
-  }
-
-  // draw graph base axle
-  gfx->drawFastHLine(0, graph_baseline, 320, WHITE);
-  for (channel = 1; channel <= 14; channel++)
-  {
-    idx = channel - 1;
-    offset = (channel + 1) * channel_width;
-    gfx->setTextColor(channel_color[idx]);
-    gfx->setCursor(offset - ((channel < 10) ? 3 : 6), graph_baseline + 2);
-    gfx->print(channel);
-    if (ap_count_list[idx] > 0)
-    {
-      gfx->setCursor(offset - ((ap_count_list[idx] < 10) ? 9 : 12), graph_baseline + 8 + 2);
-      gfx->print('{');
-      gfx->print(ap_count_list[idx]);
-      gfx->print('}');
-    }
-  }
-
-  // Wait a bit before scanning again
-  delay(SCAN_INTERVAL);
-
-#if defined(SCAN_COUNT_SLEEP)
-  // POWER SAVING
-  if (++scan_count >= SCAN_COUNT_SLEEP)
-  {
-#if defined(LCD_PWR_PIN)
-    pinMode(LCD_PWR_PIN, INPUT); // disable pin
-#endif
-
-#if defined(GFX_BL)
-    pinMode(GFX_BL, INPUT); // disable pin
-#endif
-
-#if defined(ESP32)
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_36, LOW);
-    esp_deep_sleep_start();
+#ifdef DIRECT_MODE
+#if (LV_COLOR_16_SWAP != 0)
+  gfx->draw16bitBeRGBBitmap(0, 0, (uint16_t *)disp_draw_buf, screenWidth, screenHeight);
 #else
-    ESP.deepSleep(0);
+  gfx->draw16bitRGBBitmap(0, 0, (uint16_t *)disp_draw_buf, screenWidth, screenHeight);
 #endif
-  }
-#endif // defined(SCAN_COUNT_SLEEP)
+#endif // #ifdef DIRECT_MODE
+
+#ifdef CANVAS
+  gfx->flush();
+#endif
+
+  delay(5);
+}
+
+void printMemoryInfo()
+{
+  Serial.print("Free heap: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");
+
+  Serial.print("Free PSRAM: ");
+  Serial.print(ESP.getFreePsram() / 1024);
+  Serial.println(" KB");
 }
