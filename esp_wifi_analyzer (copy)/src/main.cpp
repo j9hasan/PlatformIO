@@ -19,9 +19,29 @@
 
 #define GFX_BL DF_GFX_BL
 
-Arduino_DataBus *bus = create_default_Arduino_DataBus();
+#if defined(ESP32) && (CONFIG_IDF_TARGET_ESP32)
 
+Arduino_DataBus *bus = create_default_Arduino_DataBus();
 Arduino_GFX *gfx = new Arduino_ILI9341(bus, DF_GFX_RST, 3 /* rotation */, false /* IPS */);
+
+#endif
+
+#if defined(ESP32) && (CONFIG_IDF_TARGET_ESP32S3)
+
+Arduino_ESP32RGBPanel *bus = new Arduino_ESP32RGBPanel(
+    // GFX_NOT_DEFINED /* CS */, GFX_NOT_DEFINED /* SCK */, GFX_NOT_DEFINED /* SDA */,
+    41 /* DE */, 40 /* VSYNC */, 39 /* HSYNC */, 42 /* PCLK */,
+    14 /* R0 */, 21 /* R1 */, 47 /* R2 */, 48 /* R3 */, 45 /* R4 */,
+    9 /* G0 */, 46 /* G1 */, 3 /* G2 */, 8 /* G3 */, 16 /* G4 */, 1 /* G5 */,
+    15 /* B0 */, 7 /* B1 */, 6 /* B2 */, 5 /* B3 */, 4 /* B4 */,
+    0 /* hsync_polarity */, 180 /* hsync_front_porch */, 30 /* hsync_pulse_width */, 16 /* hsync_back_porch */,
+    0 /* vsync_polarity */, 12 /* vsync_front_porch */, 13 /* vsync_pulse_width */, 10 /* vsync_back_porch */ // ,1 /* pclk_active_neg */, 8000000 /* prefer_speed */, GFX_NOT_DEFINED /* auto_flush */
+
+);
+Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
+    800, 480, bus, 0, true, NULL);
+
+#endif
 
 #include "WiFi.h"
 
