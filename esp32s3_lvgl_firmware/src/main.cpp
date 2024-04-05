@@ -39,6 +39,8 @@ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
 // #define ARDUINO_USB_CDC_ON_BOOT 0
 // static protootypes
 void printMemoryInfo();
+void connectToWiFi();
+void scanEndedCB(NimBLEScanResults results);
 
 /* Change to your screen resolution */
 static uint32_t screenWidth;
